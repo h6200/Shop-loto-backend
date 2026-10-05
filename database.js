@@ -51,6 +51,9 @@ function findUserByPhone(phone) {
 function findUserById(id) {
   return state.users.find((u) => u.id === id) || null;
 }
+function listUsers() {
+  return [...state.users];
+}
 function createUser(phone, firstName, lastName, isAdmin) {
   const id = ++state.counters.user;
   const user = {
@@ -70,6 +73,11 @@ function getActiveSubsForUser(userId) {
   const now = Date.now();
   return state.subscriptions
     .filter((s) => s.user_id === userId && new Date(s.end_date).getTime() > now)
+    .sort((a, b) => new Date(b.end_date) - new Date(a.end_date));
+}
+function getSubsForUser(userId) {
+  return state.subscriptions
+    .filter((s) => s.user_id === userId)
     .sort((a, b) => new Date(b.end_date) - new Date(a.end_date));
 }
 function createSubscription(userId, lotteryId, plan, duration, price, endDate) {
@@ -115,6 +123,11 @@ function getPaymentById(id) {
 function listPayments() {
   return [...state.payments].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 }
+function listPaymentsByPhone(phone) {
+  return state.payments
+    .filter((p) => p.phone === phone)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+}
 function updatePaymentStatus(id, status) {
   const p = getPaymentById(id);
   if (p) {
@@ -124,9 +137,10 @@ function updatePaymentStatus(id, status) {
   return p;
 }
 
-function listBols(lotteryId) {
+function listBols(lotteryId, category) {
   let list = state.bols;
   if (lotteryId) list = list.filter((b) => b.lottery_id === lotteryId);
+  if (category) list = list.filter((b) => b.category === category);
   return [...list].sort((a, b) => a.number.localeCompare(b.number));
 }
 function getBolById(id) {
@@ -172,8 +186,8 @@ function upsertResults(lotteryId, results) {
       game: r.game,
       session: r.session,
       numbers: Array.isArray(r.numbers) ? r.numbers.join('') : String(r.numbers),
-      sum: r.sum ?? null,
-      boost: r.boost ?? null,
+      sum: r.sum || null,
+      boost: r.boost || null,
       fetched_at: nowIso(),
     });
   }
@@ -209,12 +223,15 @@ function getDashboardStats() {
 module.exports = {
   findUserByPhone,
   findUserById,
+  listUsers,
   createUser,
   getActiveSubsForUser,
+  getSubsForUser,
   createSubscription,
   createPayment,
   getPaymentById,
   listPayments,
+  listPaymentsByPhone,
   updatePaymentStatus,
   listBols,
   getBolById,
