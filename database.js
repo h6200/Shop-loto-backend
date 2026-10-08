@@ -146,6 +146,21 @@ function listBols(lotteryId, category) {
 function getBolById(id) {
   return state.bols.find((b) => b.id === id) || null;
 }
+function getBolsByBuyer(phone) {
+  return state.bols
+    .filter((b) => b.buyer_phone === phone)
+    .sort((a, b) => a.lottery_id.localeCompare(b.lottery_id) || a.number.localeCompare(b.number));
+}
+function assignAvailableBol(lotteryId, category, buyerPhone) {
+  const bol = state.bols.find(
+    (b) => b.lottery_id === lotteryId && b.category === category && b.status === 'available'
+  );
+  if (!bol) return null;
+  bol.status = 'sold';
+  bol.buyer_phone = buyerPhone;
+  save();
+  return bol;
+}
 function createBol(lotteryId, number, category, price) {
   const id = ++state.counters.bol;
   const bol = {
@@ -235,6 +250,8 @@ module.exports = {
   updatePaymentStatus,
   listBols,
   getBolById,
+  getBolsByBuyer,
+  assignAvailableBol,
   createBol,
   removeBol,
   buyBol,
