@@ -103,7 +103,6 @@ app.post('/api/auth/login', (req, res) => {
   res.json({ token: makeToken(user.id), user: serializeUser(user) });
 });
 
-// Rezilta lotri
 app.get('/api/results/ny', async (req, res) => {
   try {
     const cached = db.getCachedResults('ny', 60);
@@ -163,9 +162,9 @@ function saveScreenshot(base64) {
   }
 }
 
-// Peman
 app.post('/api/payments/submit', (req, res) => {
-  const { phone, name, lottery_id, plan, duration, price, screenshot_base64 } = req.body || {};
+  const { phone, name, lottery_id, plan, duration, price, screenshot_base64 } =
+    req.body || {};
   const cleanPhone = String(phone || '').replace(/\D/g, '');
   const user = db.findUserByPhone(cleanPhone);
   const filename = saveScreenshot(screenshot_base64);
@@ -203,7 +202,6 @@ function serializePayment(r) {
   };
 }
 
-// Pwofil mwen (plan achte + ekspirasyon)
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({ user: serializeUser(req.user) });
 });
@@ -240,7 +238,6 @@ app.post('/api/admin/payments/:id/reject', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// Boul bòlèt — lis piblik (pou admin wè / li) ak "boul pa mwen" pou VIP
 app.get('/api/bols', (req, res) => {
   const lotteryId = req.query.lottery_id || null;
   const category = req.query.category || null;
@@ -248,23 +245,35 @@ app.get('/api/bols', (req, res) => {
   res.json(rows.map((b) => serializeBol(b)));
 });
 
-// Boul VIP: sèlman sa moun nan peye (kategori = plan yo achte a)
 app.get('/api/bols/mine', requireAuth, (req, res) => {
   const subs = db.getActiveSubsForUser(req.user.id);
+  const subsOut = subs.map((s) => ({
+    lottery_id: s.lottery_id,
+    plan: s.plan,
+    duration: s.duration,
+    end_date: s.end_date,
+    status: 'active',
+  }));
   if (!subs.length) return res.json({ bols: [], subs: [] });
-  const result = { bols: [], subs: [] };
+
   for (const s of subs) {
-    result.subs.push({
-      lottery_id: s.lottery_id,
-      plan: s.plan,
-      duration: s.duration,
-      end_date: s.end_date,
-      status: 'active',
-    });
-    const bols = db.listBols(s.lottery_id, s.plan);
-    for (const b of bols) result.bols.push(serializeBol(b));
+    const owned = db.getBolsByBuyer(req.user.phone).filter(
+      (b) => b.lottery_id === s.lottery_id && b.category === s.plan
+    );
+    if (owned.length === 0) {
+      db.assignAvailableBol(s.lottery_id, s.plan, req.user.phone);
+    }
   }
-  res.json(result);
+
+  const myBols = db.getBolsByBuyer(req.user.phone);
+  res.json({ bols: myBols.map((b) => serializeBol(b)), subs: subsOut });
+});
+
+app.post('/api/bols/:id/buy', requireAuth, (req, res) => {
+  const user = req.user;
+  const result = db.buyBol(Number(req.params.id), user.phone);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true, bol: serializeBol(result.bol) });
 });
 
 function serializeBol(b) {
@@ -275,16 +284,10 @@ function serializeBol(b) {
     category: b.category,
     price: b.price,
     status: b.status,
+    buyer_phone: b.buyer_phone || null,
     created_at: b.created_at,
   };
 }
-
-app.post('/api/bols/:id/buy', requireAuth, (req, res) => {
-  const user = req.user;
-  const result = db.buyBol(Number(req.params.id), user.phone);
-  if (!result.ok) return res.status(400).json({ error: result.error });
-  res.json({ ok: true, bol: serializeBol(result.bol) });
-});
 
 app.post('/api/admin/bols', requireAdmin, (req, res) => {
   const { lottery_id, number, category, price } = req.body || {};
