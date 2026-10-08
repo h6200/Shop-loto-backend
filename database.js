@@ -110,6 +110,7 @@ function createPayment(data) {
     duration: data.duration || '',
     price: data.price || 0,
     screenshot_path: data.screenshotPath || '',
+    moncash_reference: data.moncashReference || null,
     status: 'pending',
     created_at: nowIso(),
   };
@@ -119,6 +120,9 @@ function createPayment(data) {
 }
 function getPaymentById(id) {
   return state.payments.find((p) => p.id === id) || null;
+}
+function getPaymentByMoncashReference(ref) {
+  return state.payments.find((p) => p.moncash_reference === ref) || null;
 }
 function listPayments() {
   return [...state.payments].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -245,6 +249,7 @@ module.exports = {
   createSubscription,
   createPayment,
   getPaymentById,
+  getPaymentByMoncashReference,
   listPayments,
   listPaymentsByPhone,
   updatePaymentStatus,
