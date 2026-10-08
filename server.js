@@ -19,6 +19,14 @@ const ADMIN_PHONES = (process.env.ADMIN_PHONES || '')
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
+// raw body parser pou webhook MonCash (pou verifye HMAC sou body a)
+app.use('/api/payments/moncash/webhook', express.raw({ type: 'application/json' }));
+
+// ---- MonCashConnect config ----
+const MCC_BASE = 'https://api.moncashconnect.com/v1';
+const MCC_SECRET = process.env.MCC_SECRET || '';
+const MCC_WEBHOOK_SECRET = process.env.MCC_WEBHOOK_SECRET || '';
+const RETURN_BASE = process.env.RETURN_BASE || 'https://shop-loto-backend-production.up.railway.app';
 
 function makeToken(userId) {
   const secret = process.env.JWT_SECRET || 'boulet-vann-sekret';
@@ -179,6 +187,179 @@ app.post('/api/payments/submit', (req, res) => {
     screenshotPath: filename,
   });
   res.json({ ok: true, id });
+});
+
+// ===== MonCashConnect peman =====
+function mccHeaders() {
+  return {
+    'Authorization': 'Bearer ' + MCC_SECRET,
+    'Content-Type': 'application/json',
+    'Origin': RETURN_BASE,
+  };
+}
+
+function verifyMcWebhookSignature(rawBody, signature, timestamp) {
+  if (!MCC_WEBHOOK_SECRET) return false;
+  if (!signature || !rawBody) return false;
+  const expected = crypto.createHmac('sha256', MCC_WEBHOOK_SECRET)
+    .update(rawBody)
+    .digest('hex');
+  const provided = String(signature).replace(/^sha256=/, '');
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided));
+}
+
+function activatePaymentSubscription(p) {
+  // Menm lojik ak /api/admin/payments/:id/approve
+  const user = db.findUserByPhone(p.phone);
+  if (user) {
+    const days = p.duration === 'week' ? 7 : p.duration === 'year' ? 365 : 30;
+    const end = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    db.createSubscription(user.id, p.lottery_id, p.plan, p.duration, p.price, end);
+  }
+}
+
+app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
+  const { lotteryId, plan, duration, price } = req.body || {};
+  const cleanLottery = ['ny', 'fl'].includes(lotteryId) ? lotteryId : 'ny';
+  const cleanPlan = ['basic', 'silver', 'gold'].includes(plan) ? plan : 'basic';
+  const cleanDuration = ['week', 'month', 'year'].includes(duration) ? duration : 'month';
+  const amount = Math.round(Number(price) || 0);
+  if (amount < 1 || amount > 100000) {
+    return res.status(400).json({ error: 'Pri pa valab' });
+  }
+  if (!MCC_SECRET) {
+    return res.status(500).json({ error: 'Peman MonCash poko konfigire sou sewè a' });
+  }
+
+  const user = req.user;
+  // Idantifyan inik pou referans MonCash
+  const reference = 'sl_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
+
+  // Kreye peman "pending" nan baz done an
+  const paymentId = db.createPayment({
+    userId: user.id,
+    phone: user.phone,
+    name: (user.first_name + ' ' + user.last_name).trim(),
+    lotteryId: cleanLottery,
+    plan: cleanPlan,
+    duration: cleanDuration,
+    price: amount,
+    screenshotPath: '',
+    moncashReference: reference,
+  });
+
+  try {
+    const mcRes = await fetch(MCC_BASE + '/pay-create', {
+      method: 'POST',
+      headers: {
+        ...mccHeaders(),
+        'Idempotency-Key': reference,
+      },
+      body: JSON.stringify({
+        amount: amount,
+        referenceId: reference,
+        returnUrl: RETURN_BASE + '/api/payments/moncash/return?ref=' + reference,
+        customerName: (user.first_name + ' ' + user.last_name).trim() || undefined,
+        customerEmail: undefined,
+      }),
+    });
+    const mcData = await mcRes.json().catch(() => ({}));
+    if (!mcRes.ok) {
+      console.error('[mcc] pay-create echwe:', mcRes.status, JSON.stringify(mcData));
+      return res.status(502).json({ error: mcData.error || 'MonCash pay-create echwe' });
+    }
+    res.json({
+      ok: true,
+      paymentId: String(paymentId),
+      referenceId: reference,
+      paymentUrl: mcData.paymentUrl,
+      expiresAt: mcData.expiresAt,
+      livemode: !!mcData.livemode,
+    });
+  } catch (e) {
+    console.error('[mcc] pay-create erè:', e.message);
+    res.status(502).json({ error: 'Pa ka konekte ak MonCash' });
+  }
+});
+
+app.get('/api/payments/moncash/status', requireAuth, async (req, res) => {
+  const ref = req.query.referenceId || req.query.reference || '';
+  if (!ref) return res.status(400).json({ error: 'referenceId obligatwa' });
+  if (!MCC_SECRET) return res.status(500).json({ error: 'Peman MonCash poko konfigire' });
+  try {
+    const mcRes = await fetch(MCC_BASE + '/pay-status?referenceId=' + encodeURIComponent(ref), {
+      method: 'GET',
+      headers: mccHeaders(),
+    });
+    const mcData = await mcRes.json().catch(() => ({}));
+    if (!mcRes.ok) {
+      return res.status(502).json({ error: mcData.error || 'MonCash pay-status echwe' });
+    }
+    // Si peman komplete, aktive abònman an (safeguard si webhook pa rive)
+    if (mcData.status === 'completed') {
+      const p = db.getPaymentByMoncashReference(ref);
+      if (p && p.status !== 'approved') {
+        db.updatePaymentStatus(p.id, 'approved');
+        activatePaymentSubscription(p);
+      }
+    }
+    res.json(mcData);
+  } catch (e) {
+    res.status(502).json({ error: 'Pa ka konekte ak MonCash' });
+  }
+});
+
+app.get('/api/payments/moncash/return', (req, res) => {
+  const ref = req.query.ref || '';
+  // Redireksyon pou navigatè a (app a deja ap chase statis)
+  res.redirect(RETURN_BASE + '/api/payments/moncash/done?ref=' + encodeURIComponent(ref));
+});
+
+app.get('/api/payments/moncash/done', (req, res) => {
+  res.type('html').send('<h2>Peman fini. Ou ka retounen nan app la.</h2>');
+});
+
+app.post('/api/payments/moncash/webhook', (req, res) => {
+  const rawBody = req.body; // Buffer (express.raw)
+  const rawStr = rawBody ? rawBody.toString('utf8') : '';
+  const signature = req.headers['x-mcc-signature'] || '';
+  const timestamp = req.headers['x-mcc-timestamp'] || '';
+
+  const ok = verifyMcWebhookSignature(rawStr, signature, timestamp);
+  if (!ok) {
+    console.error('[mcc] webhook siyati pa valab');
+    return res.status(401).json({ error: 'Siyati pa valab' });
+  }
+
+  let event;
+  try {
+    event = JSON.parse(rawStr);
+  } catch (e) {
+    return res.status(400).json({ error: 'Body pa valab' });
+  }
+
+  const reference = event.referenceId || event.reference || event.data?.referenceId || null;
+  if (!reference) return res.status(400).json({ error: 'referenceId manke' });
+
+  const p = db.getPaymentByMoncashReference(reference);
+  if (!p) {
+    // Unknown reference: ack anyways (idempotent) pou evite retries
+    return res.json({ received: true });
+  }
+
+  const status = event.status || event.type || '';
+  if (status === 'payment.completed' || status === 'completed' || event.type === 'payment.completed') {
+    if (p.status !== 'approved') {
+      db.updatePaymentStatus(p.id, 'approved');
+      activatePaymentSubscription(p);
+    }
+  } else if (status === 'payment.failed' || status === 'failed') {
+    if (p.status === 'pending') db.updatePaymentStatus(p.id, 'failed');
+  } else if (status === 'payment.cancelled' || status === 'cancelled') {
+    if (p.status === 'pending') db.updatePaymentStatus(p.id, 'cancelled');
+  }
+
+  res.json({ received: true });
 });
 
 app.get('/api/payments/mine', requireAuth, (req, res) => {
