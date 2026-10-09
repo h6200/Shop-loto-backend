@@ -71,6 +71,7 @@ function serializeUser(user) {
       start_date: s.start_date,
       end_date: s.end_date,
       status: (new Date(s.end_date).getTime() > Date.now()) ? 'active' : 'expired',
+      ticket_number: s.ticket_number || null,
     };
   }
   return {
@@ -232,10 +233,8 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
   }
 
   const user = req.user;
-  // Idantifyan inik pou referans MonCash
   const reference = 'sl_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
 
-  // Kreye peman "pending" nan baz done an
   const paymentId = db.createPayment({
     userId: user.id,
     phone: user.phone,
@@ -295,7 +294,6 @@ app.get('/api/payments/moncash/status', requireAuth, async (req, res) => {
     if (!mcRes.ok) {
       return res.status(502).json({ error: mcData.error || 'MonCash pay-status echwe' });
     }
-    // Si peman komplete, aktive abònman an (safeguard si webhook pa rive)
     if (mcData.status === 'completed') {
       const p = db.getPaymentByMoncashReference(ref);
       if (p && p.status !== 'approved') {
@@ -311,7 +309,6 @@ app.get('/api/payments/moncash/status', requireAuth, async (req, res) => {
 
 app.get('/api/payments/moncash/return', (req, res) => {
   const ref = req.query.ref || '';
-  // Redireksyon pou navigatè a (app a deja ap chase statis)
   res.redirect(RETURN_BASE + '/api/payments/moncash/done?ref=' + encodeURIComponent(ref));
 });
 
@@ -320,7 +317,7 @@ app.get('/api/payments/moncash/done', (req, res) => {
 });
 
 app.post('/api/payments/moncash/webhook', (req, res) => {
-  const rawBody = req.body; // Buffer (express.raw)
+  const rawBody = req.body;
   const rawStr = rawBody ? rawBody.toString('utf8') : '';
   const signature = req.headers['x-mcc-signature'] || '';
   const timestamp = req.headers['x-mcc-timestamp'] || '';
@@ -343,7 +340,6 @@ app.post('/api/payments/moncash/webhook', (req, res) => {
 
   const p = db.getPaymentByMoncashReference(reference);
   if (!p) {
-    // Unknown reference: ack anyways (idempotent) pou evite retries
     return res.json({ received: true });
   }
 
@@ -434,6 +430,7 @@ app.get('/api/bols/mine', requireAuth, (req, res) => {
     duration: s.duration,
     end_date: s.end_date,
     status: 'active',
+    ticket_number: s.ticket_number || null,
   }));
   if (!subs.length) return res.json({ bols: [], subs: [] });
 
