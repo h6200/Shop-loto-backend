@@ -10,7 +10,7 @@ const state = {
   payments: [],
   results: [],
   bols: [],
-  counters: { user: 0, sub: 0, payment: 0, bol: 0 },
+  counters: { user: 0, sub: 0, payment: 0, bol: 0, ticket: 0 },
 };
 
 function load() {
@@ -24,7 +24,7 @@ function load() {
       state.payments = raw.payments || [];
       state.results = raw.results || [];
       state.bols = raw.bols || [];
-      state.counters = raw.counters || { user: 0, sub: 0, payment: 0, bol: 0 };
+      state.counters = raw.counters || { user: 0, sub: 0, payment: 0, bol: 0, ticket: 0 };
     }
   } catch (e) {
     console.error('[db] chaj echwe:', e.message);
@@ -80,7 +80,17 @@ function getSubsForUser(userId) {
     .filter((s) => s.user_id === userId)
     .sort((a, b) => new Date(b.end_date) - new Date(a.end_date));
 }
-function createSubscription(userId, lotteryId, plan, duration, price, endDate) {
+
+// Gen yon nimewo tikèt inik SHP-2026-XXXXXX
+function nextTicketNumber() {
+  if (!state.counters.ticket) state.counters.ticket = 0;
+  state.counters.ticket += 1;
+  const year = new Date().getFullYear();
+  const num = String(state.counters.ticket).padStart(6, '0');
+  return 'SHP-' + year + '-' + num;
+}
+
+function createSubscription(userId, lotteryId, plan, duration, price, endDate, ticketNumber) {
   const id = ++state.counters.sub;
   const sub = {
     id,
@@ -92,6 +102,7 @@ function createSubscription(userId, lotteryId, plan, duration, price, endDate) {
     start_date: nowIso(),
     end_date: endDate,
     status: 'active',
+    ticket_number: ticketNumber || nextTicketNumber(),
   };
   state.subscriptions.push(sub);
   save();
@@ -247,6 +258,7 @@ module.exports = {
   getActiveSubsForUser,
   getSubsForUser,
   createSubscription,
+  nextTicketNumber,
   createPayment,
   getPaymentById,
   getPaymentByMoncashReference,
