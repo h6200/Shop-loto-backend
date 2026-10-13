@@ -132,7 +132,8 @@ app.get('/api/results/fl', async (req, res) => {
     if (results.length) db.upsertResults('fl', results);
     res.json(results);
   } catch (e) {
-    res.status(500).json({ error: 'Pa ka jwenn rezilta FL: ' + e.message ' });
+    res.status(500).json({ error: 'Pa ka jwenn rezilta FL: ' + e.message });
+  }
 });
 
 app.get('/api/results/:lottery', async (req, res) => {
@@ -160,7 +161,7 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 function saveScreenshot(base64) {
   if (!base64) return '';
   try {
-    const clean = base64.replace(/^data:image\/\w+;base64,, '');
+    const clean = base64.replace(/^data:image\/\w+;base64,/, '');
     const buf = Buffer.from(clean, 'base64');
     const name = 'shot_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex') + '.png';
     fs.writeFileSync(path.join(uploadDir, name), buf);
@@ -522,5 +523,5 @@ cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
 app.listen(PORT, () => {
-  console.log(`Shop loto backend api oute sou pò ${PORT}`);
+  console.log(`Shop loto backend ap koute sou pò ${PORT}`);
 });
