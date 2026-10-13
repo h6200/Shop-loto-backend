@@ -132,8 +132,7 @@ app.get('/api/results/fl', async (req, res) => {
     if (results.length) db.upsertResults('fl', results);
     res.json(results);
   } catch (e) {
-    res.status(500).json({ error: 'Pa ka jwenn rezilta FL: ' + e.message });
-  }
+    res.status(500).json({ error: 'Pa ka jwenn rezilta FL: ' + e.message ' });
 });
 
 app.get('/api/results/:lottery', async (req, res) => {
@@ -161,7 +160,7 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 function saveScreenshot(base64) {
   if (!base64) return '';
   try {
-    const clean = base64.replace(/^data:image\/\w+;base64,/, '');
+    const clean = base64.replace(/^data:image\/\w+;base64,, '');
     const buf = Buffer.from(clean, 'base64');
     const name = 'shot_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex') + '.png';
     fs.writeFileSync(path.join(uploadDir, name), buf);
@@ -415,6 +414,13 @@ app.post('/api/admin/payments/:id/reject', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete('/api/admin/payments/:id', requireAdmin, (req, res) => {
+  const p = db.getPaymentById(Number(req.params.id));
+  if (!p) return res.status(404).json({ error: 'Demann pa egziste' });
+  db.deletePayment(p.id);
+  res.json({ ok: true });
+});
+
 app.get('/api/bols', (req, res) => {
   const lotteryId = req.query.lottery_id || null;
   const category = req.query.category || null;
@@ -516,5 +522,5 @@ cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
 app.listen(PORT, () => {
-  console.log(`Shop loto backend ap koute sou pò ${PORT}`);
+  console.log(`Shop loto backend api oute sou pò ${PORT}`);
 });

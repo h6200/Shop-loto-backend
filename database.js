@@ -151,6 +151,12 @@ function updatePaymentStatus(id, status) {
   }
   return p;
 }
+function deletePayment(id) {
+  const before = state.payments.length;
+  state.payments = state.payments.filter((p) => p.id !== id);
+  if (state.payments.length !== before) save();
+  return state.payments.length !== before;
+}
 
 function listBols(lotteryId, category) {
   let list = state.bols;
@@ -265,6 +271,7 @@ module.exports = {
   listPayments,
   listPaymentsByPhone,
   updatePaymentStatus,
+  deletePayment,
   listBols,
   getBolById,
   getBolsByBuyer,
