@@ -18,11 +18,11 @@ const ADMIN_PHONES = (process.env.ADMIN_PHONES || '')
   .filter(Boolean);
 
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
-// raw body parser pou webhook Kobara (pou verifye HMAC sou body a)
+// raw body parser pou webhook Kobara APEVA express.json pou kenbe body a byte-pou-byte
 app.use('/api/payments/kobara/webhook', express.raw({ type: 'application/json' }));
 // kenbe ansyen wout MonCash pou kontinyite (men li itilize Kobara kounye a)
 app.use('/api/payments/moncash/webhook', express.raw({ type: 'application/json' }));
+app.use(express.json({ limit: '20mb' }));
 
 // ---- Kobara config ----
 const KOBARA_BASE = 'https://api.kobara.app/v1';
