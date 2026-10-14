@@ -19,13 +19,15 @@ const ADMIN_PHONES = (process.env.ADMIN_PHONES || '')
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
-// raw body parser pou webhook MonCash (pou verifye HMAC sou body a)
+// raw body parser pou webhook Kobara (pou verifye HMAC sou body a)
+app.use('/api/payments/kobara/webhook', express.raw({ type: 'application/json' }));
+// kenbe ansyen wout MonCash pou kontinyite (men li itilize Kobara kounye a)
 app.use('/api/payments/moncash/webhook', express.raw({ type: 'application/json' }));
 
-// ---- MonCashConnect config ----
-const MCC_BASE = 'https://api.moncashconnect.com/v1';
-const MCC_SECRET = process.env.MCC_SECRET || '';
-const MCC_WEBHOOK_SECRET = process.env.MCC_WEBHOOK_SECRET || '';
+// ---- Kobara config ----
+const KOBARA_BASE = 'https://api.kobara.app/v1';
+const KOBARA_SECRET_KEY = process.env.KOBARA_SECRET_KEY || '';
+const KOBARA_WEBHOOK_SECRET = process.env.KOBARA_WEBHOOK_SECRET || '';
 const RETURN_BASE = process.env.RETURN_BASE || 'https://shop-loto-backend-production.up.railway.app';
 
 function makeToken(userId) {
@@ -190,23 +192,31 @@ app.post('/api/payments/submit', (req, res) => {
   res.json({ ok: true, id });
 });
 
-// ===== MonCashConnect peman =====
-function mccHeaders() {
+// ===== Kobara peman (MonCash + NatCash atravè yon sèl API) =====
+function kobaraHeaders() {
   return {
-    'Authorization': 'Bearer ' + MCC_SECRET,
+    'Authorization': 'Bearer ' + KOBARA_SECRET_KEY,
     'Content-Type': 'application/json',
-    'Origin': RETURN_BASE,
   };
 }
 
-function verifyMcWebhookSignature(rawBody, signature, timestamp) {
-  if (!MCC_WEBHOOK_SECRET) return false;
-  if (!signature || !rawBody) return false;
-  const expected = crypto.createHmac('sha256', MCC_WEBHOOK_SECRET)
-    .update(rawBody)
+function verifyKobaraWebhookSignature(rawBody, signatureHeader, envHeader) {
+  if (!KOBARA_WEBHOOK_SECRET) return false;
+  if (!signatureHeader || !rawBody) return false;
+  const match = String(signatureHeader).match(/^t=(\d+),v1=([a-f0-9]{64})$/);
+  if (!match) return false;
+  const timestamp = match[1];
+  const signature = match[2];
+  const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
+  if (age > 300) return false;
+  const expected = crypto
+    .createHmac('sha256', KOBARA_WEBHOOK_SECRET)
+    .update(`${timestamp}.${rawBody}`)
     .digest('hex');
-  const provided = String(signature).replace(/^sha256=/, '');
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided));
+  const a = Buffer.from(signature, 'hex');
+  const b = Buffer.from(expected, 'hex');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function activatePaymentSubscription(p) {
@@ -228,83 +238,87 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
   if (amount < 1 || amount > 100000) {
     return res.status(400).json({ error: 'Pri pa valab' });
   }
-  if (!MCC_SECRET) {
-    return res.status(500).json({ error: 'Peman MonCash poko konfigire sou sewè a' });
+  if (!KOBARA_SECRET_KEY) {
+    return res.status(500).json({ error: 'Peman poko konfigire sou sewè a' });
   }
 
   const user = req.user;
-  const reference = 'sl_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
-
-  const paymentId = db.createPayment({
-    userId: user.id,
-    phone: user.phone,
-    name: (user.first_name + ' ' + user.last_name).trim(),
-    lotteryId: cleanLottery,
-    plan: cleanPlan,
-    duration: cleanDuration,
-    price: amount,
-    screenshotPath: '',
-    moncashReference: reference,
-  });
+  const idempotencyKey = 'sl_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex');
+  const fullName = (user.first_name + ' ' + user.last_name).trim();
 
   try {
-    const mcRes = await fetch(MCC_BASE + '/pay-create', {
+    const kbRes = await fetch(KOBARA_BASE + '/payments', {
       method: 'POST',
       headers: {
-        ...mccHeaders(),
-        'Idempotency-Key': reference,
+        ...kobaraHeaders(),
+        'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify({
         amount: amount,
-        referenceId: reference,
-        returnUrl: RETURN_BASE + '/api/payments/moncash/return?ref=' + reference,
-        customerName: (user.first_name + ' ' + user.last_name).trim() || undefined,
-        customerEmail: undefined,
+        currency: 'HTG',
+        provider: 'kobara',
+        description: 'Abonnement VIP Shop loto',
+        customer: {
+          name: fullName || undefined,
+          phone: user.phone,
+        },
+        metadata: {
+          order_id: idempotencyKey,
+          lottery_id: cleanLottery,
+          plan: cleanPlan,
+          duration: cleanDuration,
+          user_phone: user.phone,
+        },
+        success_url: RETURN_BASE + '/api/payments/moncash/done',
+        cancel_url: RETURN_BASE + '/api/payments/moncash/done',
       }),
     });
-    const mcData = await mcRes.json().catch(() => ({}));
-    if (!mcRes.ok) {
-      console.error('[mcc] pay-create echwe:', mcRes.status, JSON.stringify(mcData));
-      return res.status(502).json({ error: mcData.error || 'MonCash pay-create echwe' });
+    const kbData = await kbRes.json().catch(() => ({}));
+    if (!kbRes.ok || !kbData.data) {
+      const err = (kbData.error && kbData.error.message) ? kbData.error.message : (kbData.error || 'Kobara pay-create echwe');
+      console.error('[kobara] pay-create echwe:', kbRes.status, JSON.stringify(kbData));
+      return res.status(502).json({ error: err });
     }
+
+    const reference = kbData.data.reference || kbData.data.id;
+    const checkoutUrl = kbData.data.checkout_url || kbData.data.paymentUrl || kbData.data.url || kbData.data.payment_url || '';
+
+    const paymentId = db.createPayment({
+      userId: user.id,
+      phone: user.phone,
+      name: fullName,
+      lotteryId: cleanLottery,
+      plan: cleanPlan,
+      duration: cleanDuration,
+      price: amount,
+      screenshotPath: '',
+      moncashReference: reference,
+    });
+
     res.json({
       ok: true,
       paymentId: String(paymentId),
       referenceId: reference,
-      paymentUrl: mcData.paymentUrl,
-      expiresAt: mcData.expiresAt,
-      livemode: !!mcData.livemode,
+      paymentUrl: checkoutUrl,
+      livemode: kbData.data.environment === 'live',
     });
   } catch (e) {
-    console.error('[mcc] pay-create erè:', e.message);
-    res.status(502).json({ error: 'Pa ka konekte ak MonCash' });
+    console.error('[kobara] pay-create erè:', e.message);
+    res.status(502).json({ error: 'Pa ka konekte ak Kobara' });
   }
 });
 
-app.get('/api/payments/moncash/status', requireAuth, async (req, res) => {
+// Estati peman: li menm db nou an (Kobara pa gen endpointe piblik pou poll estati).
+app.get('/api/payments/moncash/status', requireAuth, (req, res) => {
   const ref = req.query.referenceId || req.query.reference || '';
   if (!ref) return res.status(400).json({ error: 'referenceId obligatwa' });
-  if (!MCC_SECRET) return res.status(500).json({ error: 'Peman MonCash poko konfigire' });
-  try {
-    const mcRes = await fetch(MCC_BASE + '/pay-status?referenceId=' + encodeURIComponent(ref), {
-      method: 'GET',
-      headers: mccHeaders(),
-    });
-    const mcData = await mcRes.json().catch(() => ({}));
-    if (!mcRes.ok) {
-      return res.status(502).json({ error: mcData.error || 'MonCash pay-status echwe' });
-    }
-    if (mcData.status === 'completed') {
-      const p = db.getPaymentByMoncashReference(ref);
-      if (p && p.status !== 'approved') {
-        db.updatePaymentStatus(p.id, 'approved');
-        activatePaymentSubscription(p);
-      }
-    }
-    res.json(mcData);
-  } catch (e) {
-    res.status(502).json({ error: 'Pa ka konekte ak MonCash' });
-  }
+  const p = db.getPaymentByMoncashReference(ref);
+  if (!p) return res.json({ status: 'unknown' });
+  let status = 'pending';
+  if (p.status === 'approved') status = 'completed';
+  else if (p.status === 'rejected' || p.status === 'failed') status = 'failed';
+  else if (p.status === 'cancelled') status = 'cancelled';
+  res.json({ status: status, internal: p.status });
 });
 
 app.get('/api/payments/moncash/return', (req, res) => {
@@ -316,46 +330,69 @@ app.get('/api/payments/moncash/done', (req, res) => {
   res.type('html').send('<h2>Peman fini. Ou ka retounen nan app la.</h2>');
 });
 
-app.post('/api/payments/moncash/webhook', (req, res) => {
-  const rawBody = req.body;
-  const rawStr = rawBody ? rawBody.toString('utf8') : '';
-  const signature = req.headers['x-mcc-signature'] || '';
-  const timestamp = req.headers['x-mcc-timestamp'] || '';
+// ---- Webhook Kobara ----
+function handleKobaraWebhookEvent(rawStr, res) {
+  const event = JSON.parse(rawStr);
+  const eventType = event.event_type || event.type || '';
+  const data = event.data || {};
+  const reference = data.reference || data.id || event.reference || null;
 
-  const ok = verifyMcWebhookSignature(rawStr, signature, timestamp);
-  if (!ok) {
-    console.error('[mcc] webhook siyati pa valab');
-    return res.status(401).json({ error: 'Siyati pa valab' });
-  }
-
-  let event;
-  try {
-    event = JSON.parse(rawStr);
-  } catch (e) {
-    return res.status(400).json({ error: 'Body pa valab' });
-  }
-
-  const reference = event.referenceId || event.reference || event.data?.referenceId || null;
-  if (!reference) return res.status(400).json({ error: 'referenceId manke' });
-
-  const p = db.getPaymentByMoncashReference(reference);
+  const p = reference ? db.getPaymentByMoncashReference(reference) : null;
   if (!p) {
     return res.json({ received: true });
   }
 
-  const status = event.status || event.type || '';
-  if (status === 'payment.completed' || status === 'completed' || event.type === 'payment.completed') {
+  if (eventType === 'payment.succeeded' || data.status === 'succeeded') {
     if (p.status !== 'approved') {
       db.updatePaymentStatus(p.id, 'approved');
       activatePaymentSubscription(p);
     }
-  } else if (status === 'payment.failed' || status === 'failed') {
+  } else if (eventType === 'payment.failed' || data.status === 'failed') {
     if (p.status === 'pending') db.updatePaymentStatus(p.id, 'failed');
-  } else if (status === 'payment.cancelled' || status === 'cancelled') {
+  } else if (eventType === 'payment.cancelled' || data.status === 'cancelled') {
     if (p.status === 'pending') db.updatePaymentStatus(p.id, 'cancelled');
   }
 
   res.json({ received: true });
+}
+
+app.post('/api/payments/kobara/webhook', (req, res) => {
+  const rawBody = req.body;
+  const rawStr = rawBody ? rawBody.toString('utf8') : '';
+  const signature = req.headers['kobara-signature'] || '';
+  const envHeader = req.headers['kobara-environment'] || '';
+
+  const ok = verifyKobaraWebhookSignature(rawStr, signature, envHeader);
+  if (!ok) {
+    console.error('[kobara] webhook siyati pa valab');
+    return res.status(401).json({ error: 'Siyati pa valab' });
+  }
+
+  try {
+    return handleKobaraWebhookEvent(rawStr, res);
+  } catch (e) {
+    console.error('[kobara] webhook parse erè:', e.message);
+    return res.status(400).json({ error: 'Body pa valab' });
+  }
+});
+
+// Ansyen wout MonCash webhook -> redireksyon entèn pou kontinyite
+app.post('/api/payments/moncash/webhook', (req, res) => {
+  const rawBody = req.body;
+  const rawStr = rawBody ? rawBody.toString('utf8') : '';
+  const signature = req.headers['kobara-signature'] || req.headers['x-mcc-signature'] || '';
+
+  const ok = verifyKobaraWebhookSignature(rawStr, signature);
+  if (!ok) {
+    console.error('[kobara] webhook (ansyen wout) siyati pa valab');
+    return res.status(401).json({ error: 'Siyati pa valab' });
+  }
+
+  try {
+    return handleKobaraWebhookEvent(rawStr, res);
+  } catch (e) {
+    return res.status(400).json({ error: 'Body pa valab' });
+  }
 });
 
 app.get('/api/payments/mine', requireAuth, (req, res) => {
