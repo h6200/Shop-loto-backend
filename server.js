@@ -279,7 +279,7 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
       body: JSON.stringify({
         amount: amount,
         currency: 'HTG',
-        provider: 'moncash',
+        provider: 'kobara',
         description: 'Abonnement VIP Shop loto',
         customer: {
           name: fullName || undefined,
