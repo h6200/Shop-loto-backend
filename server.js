@@ -16,6 +16,8 @@ const ADMIN_PHONES = (process.env.ADMIN_PHONES || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+// PIN sekrè admin (env var ADMIN_PIN). APK pa janm gen PIN nan — li verifye atravè header X-Admin-Pin.
+const ADMIN_PIN = (process.env.ADMIN_PIN || '').trim();
 
 app.use(cors());
 // raw body parser pou webhook Kobara APEVA express.json pou kenbe body a byte-pou-byte
@@ -54,12 +56,33 @@ function requireAuth(req, res, next) {
 function requireAdmin(req, res, next) {
   const uid = userIdFromToken((req.headers.authorization || '').replace(/^Bearer /, ''));
   const user = uid ? db.findUserById(uid) : null;
+  // Double sekirite: itilizatè dwe make kòm admin (numéro telefòn admin)
+  // EPI bay PIN sekrè valab (nan env var ADMIN_PIN sou backend sèlman).
   if (!user || !user.is_admin) {
     return res.status(403).json({ error: 'Aksè refize' });
+  }
+  const pin = (req.headers['x-admin-pin'] || '').toString().trim();
+  if (!ADMIN_PIN || pin !== ADMIN_PIN) {
+    return res.status(403).json({ error: 'PIN admin pa valab' });
   }
   req.user = user;
   next();
 }
+
+// Verifye PIN admin san yo pa ekspoze PIN nan APK. Sèlman verifye match.
+app.post('/api/admin/verify-pin', requireAuth, (req, res) => {
+  if (!req.user || !req.user.is_admin) {
+    return res.status(403).json({ error: 'Aksè refize' });
+  }
+  const pin = (req.body && req.body.pin ? String(req.body.pin).trim() : '');
+  if (!ADMIN_PIN) {
+    return res.status(500).json({ error: 'ADMIN_PIN pa konfigir sou sèvè a' });
+  }
+  if (pin === ADMIN_PIN) {
+    return res.json({ ok: true });
+  }
+  return res.status(401).json({ error: 'PIN pa kòrèk' });
+});
 
 function serializeUser(user) {
   const subs = db.getSubsForUser(user.id);
