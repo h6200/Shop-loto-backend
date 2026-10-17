@@ -174,14 +174,16 @@ function getBolsByBuyer(phone) {
     .sort((a, b) => a.lottery_id.localeCompare(b.lottery_id) || a.number.localeCompare(b.number));
 }
 function assignAvailableBol(lotteryId, category, buyerPhone) {
-  const bol = state.bols.find(
+  const bols = state.bols.filter(
     (b) => b.lottery_id === lotteryId && b.category === category && b.status === 'available'
   );
-  if (!bol) return null;
-  bol.status = 'sold';
-  bol.buyer_phone = buyerPhone;
+  if (!bols.length) return [];
+  for (const bol of bols) {
+    bol.status = 'sold';
+    bol.buyer_phone = buyerPhone;
+  }
   save();
-  return bol;
+  return bols;
 }
 function createBol(lotteryId, number, category, price) {
   const id = ++state.counters.bol;
@@ -230,14 +232,16 @@ function getChif3ByBuyer(phone) {
     .sort((a, b) => a.lottery_id.localeCompare(b.lottery_id) || a.number.localeCompare(b.number));
 }
 function assignAvailableChif3(lotteryId, category, buyerPhone) {
-  const c = state.chif3.find(
+  const list = state.chif3.filter(
     (b) => b.lottery_id === lotteryId && b.category === category && b.status === 'available'
   );
-  if (!c) return null;
-  c.status = 'sold';
-  c.buyer_phone = buyerPhone;
+  if (!list.length) return [];
+  for (const c of list) {
+    c.status = 'sold';
+    c.buyer_phone = buyerPhone;
+  }
   save();
-  return c;
+  return list;
 }
 function createChif3(lotteryId, number, category, price) {
   const id = ++state.counters.chif3;
