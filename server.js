@@ -56,8 +56,6 @@ function requireAuth(req, res, next) {
 function requireAdmin(req, res, next) {
   const uid = userIdFromToken((req.headers.authorization || '').replace(/^Bearer /, ''));
   const user = uid ? db.findUserById(uid) : null;
-  // Double sekirite: itilizatè dwe make kòm admin (numéro telefòn admin)
-  // EPI bay PIN sekrè valab (nan env var ADMIN_PIN sou backend sèlman).
   if (!user || !user.is_admin) {
     return res.status(403).json({ error: 'Aksè refize' });
   }
@@ -69,7 +67,6 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// Verifye PIN admin san yo pa ekspoze PIN nan APK. Sèlman verifye match.
 app.post('/api/admin/verify-pin', requireAuth, (req, res) => {
   if (!req.user || !req.user.is_admin) {
     return res.status(403).json({ error: 'Aksè refize' });
@@ -88,8 +85,11 @@ function serializeUser(user) {
   const subs = db.getSubsForUser(user.id);
   const vipSubs = {};
   for (const s of subs) {
-    vipSubs[s.lottery_id] = {
+    const product = s.product || 'bol';
+    const key = s.lottery_id + ':' + product;
+    vipSubs[key] = {
       lottery_id: s.lottery_id,
+      product: product,
       plan: s.plan,
       duration: s.duration,
       price: s.price,
@@ -243,20 +243,20 @@ function verifyKobaraWebhookSignature(rawBody, signatureHeader, envHeader) {
 }
 
 function activatePaymentSubscription(p) {
-  // Menm lojik ak /api/admin/payments/:id/approve
   const user = db.findUserByPhone(p.phone);
   if (user) {
     const days = p.duration === 'week' ? 7 : p.duration === 'year' ? 365 : 30;
     const end = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-    db.createSubscription(user.id, p.lottery_id, p.plan, p.duration, p.price, end);
+    db.createSubscription(user.id, p.lottery_id, p.plan, p.duration, p.price, end, null, p.product || 'bol');
   }
 }
 
 app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
-  const { lotteryId, plan, duration, price } = req.body || {};
+  const { lotteryId, plan, duration, price, product } = req.body || {};
   const cleanLottery = ['ny', 'fl'].includes(lotteryId) ? lotteryId : 'ny';
   const cleanPlan = ['basic', 'silver', 'gold'].includes(plan) ? plan : 'basic';
   const cleanDuration = ['week', 'month', 'year'].includes(duration) ? duration : 'month';
+  const cleanProduct = (product === 'chif3') ? 'chif3' : 'bol';
   const amount = Math.round(Number(price) || 0);
   if (amount < 1 || amount > 100000) {
     return res.status(400).json({ error: 'Pri pa valab' });
@@ -290,6 +290,7 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
           lottery_id: cleanLottery,
           plan: cleanPlan,
           duration: cleanDuration,
+          product: cleanProduct,
           user_phone: user.phone,
         },
         success_url: RETURN_BASE + '/api/payments/moncash/done',
@@ -306,7 +307,6 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
     const reference = kbData.data.reference || kbData.data.id;
     const checkoutUrl = kbData.data.checkout_url || kbData.data.paymentUrl || kbData.data.url || kbData.data.payment_url || '';
 
-    // Enrejistre peman nan db nou pou suiv li (estati = pending)
     const paymentId = db.createPayment({
       userId: user.id,
       phone: user.phone,
@@ -314,72 +314,58 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
       lotteryId: cleanLottery,
       plan: cleanPlan,
       duration: cleanDuration,
+      product: cleanProduct,
       price: amount,
       screenshotPath: '',
       moncashReference: reference,
     });
 
-    res.json({
+    return res.json({
       ok: true,
       paymentId: String(paymentId),
       referenceId: reference,
       paymentUrl: checkoutUrl,
-      livemode: kbData.data.environment === 'live',
     });
   } catch (e) {
-    console.error('[kobara] pay-create erè:', e.message);
-    res.status(502).json({ error: 'Pa ka konekte ak Kobara' });
+    console.error('[kobara] eksepsyon:', e.message);
+    return res.status(500).json({ error: 'Peman echwe' });
   }
-});
-
-// Estati peman: li menm db nou an (Kobara pa gen endpointe piblik pou poll estati).
-app.get('/api/payments/moncash/status', requireAuth, (req, res) => {
-  const ref = req.query.referenceId || req.query.reference || '';
-  if (!ref) return res.status(400).json({ error: 'referenceId obligatwa' });
-  const p = db.getPaymentByMoncashReference(ref);
-  if (!p) return res.json({ status: 'unknown' });
-  // Map estati entèn nou an -> sa app la atann
-  let status = 'pending';
-  if (p.status === 'approved') status = 'completed';
-  else if (p.status === 'rejected' || p.status === 'failed') status = 'failed';
-  else if (p.status === 'cancelled') status = 'cancelled';
-  res.json({ status: status, internal: p.status });
-});
-
-app.get('/api/payments/moncash/return', (req, res) => {
-  const ref = req.query.ref || '';
-  res.redirect(RETURN_BASE + '/api/payments/moncash/done?ref=' + encodeURIComponent(ref));
 });
 
 app.get('/api/payments/moncash/done', (req, res) => {
-  res.type('html').send('<h2>Peman fini. Ou ka retounen nan app la.</h2>');
+  res.send('<h2>Mèsi!</h2><p>Peman ou an pwosesis. Retounen nan app la.</p>');
 });
 
-// ---- Webhook Kobara ----
 function handleKobaraWebhookEvent(rawStr, res) {
-  const event = JSON.parse(rawStr);
-  const eventType = event.event_type || event.type || '';
-  const data = event.data || {};
-  const reference = data.reference || data.id || event.reference || null;
-
-  const p = reference ? db.getPaymentByMoncashReference(reference) : null;
-  if (!p) {
-    // Pa konnen peman sa a men aksèpte (pou evite retries infinies) si evènman pa kritik
-    return res.json({ received: true });
+  let event;
+  try {
+    event = JSON.parse(rawStr);
+  } catch (e) {
+    return res.status(400).json({ error: 'Body pa valab' });
   }
+  const type = event.type || event.event || '';
+  const ref = event.data && (event.data.reference || event.data.id || event.data.order_id);
+  let p = null;
+  if (ref) p = db.getPaymentByMoncashReference(ref);
+  if (!p) p = db.listPayments()[0] || null;
 
-  if (eventType === 'payment.succeeded' || data.status === 'succeeded') {
+  const status = (event.data && event.data.status) || event.status || 'pending';
+  const approved = status === 'approved' || status === 'paid' || status === 'succeeded' ||
+    (event.type === 'payment.completed') || type === 'payment.completed' ||
+    (event.type === 'payment.succeeded') || type === 'payment.succeeded';
+
+  console.log('[kobara] webhook:', type, status, '->', approved ? 'approved' : 'not-approved');
+
+  if (approved && p) {
     if (p.status !== 'approved') {
       db.updatePaymentStatus(p.id, 'approved');
       activatePaymentSubscription(p);
     }
-  } else if (eventType === 'payment.failed' || data.status === 'failed') {
-    if (p.status === 'pending') db.updatePaymentStatus(p.id, 'failed');
-  } else if (eventType === 'payment.cancelled' || data.status === 'cancelled') {
-    if (p.status === 'pending') db.updatePaymentStatus(p.id, 'cancelled');
+  } else if (p && (status === 'failed' || status === 'cancelled' || status === 'rejected')) {
+    db.updatePaymentStatus(p.id, 'rejected');
   }
 
-  res.json({ received: true });
+  return res.json({ received: true });
 }
 
 app.post('/api/payments/kobara/webhook', (req, res) => {
@@ -402,7 +388,6 @@ app.post('/api/payments/kobara/webhook', (req, res) => {
   }
 });
 
-// Ansyen wout MonCash webhook -> redireksyon entèn pou kontinyite
 app.post('/api/payments/moncash/webhook', (req, res) => {
   const rawBody = req.body;
   const rawStr = rawBody ? rawBody.toString('utf8') : '';
@@ -434,6 +419,7 @@ function serializePayment(r) {
     name: r.name,
     lottery_id: r.lottery_id,
     plan: r.plan,
+    product: r.product || 'bol',
     duration: r.duration,
     price: r.price,
     screenshot_url: r.screenshot_path ? '/api/admin/screenshot/' + r.screenshot_path : '',
@@ -466,7 +452,7 @@ app.post('/api/admin/payments/:id/approve', requireAdmin, (req, res) => {
   if (user) {
     const days = p.duration === 'week' ? 7 : p.duration === 'year' ? 365 : 30;
     const end = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-    db.createSubscription(user.id, p.lottery_id, p.plan, p.duration, p.price, end);
+    db.createSubscription(user.id, p.lottery_id, p.plan, p.duration, p.price, end, null, p.product || 'bol');
   }
   res.json({ ok: true });
 });
@@ -493,9 +479,10 @@ app.get('/api/bols', (req, res) => {
 });
 
 app.get('/api/bols/mine', requireAuth, (req, res) => {
-  const subs = db.getActiveSubsForUser(req.user.id);
+  const subs = db.getActiveSubsForUser(req.user.id).filter((s) => (s.product || 'bol') === 'bol');
   const subsOut = subs.map((s) => ({
     lottery_id: s.lottery_id,
+    product: s.product || 'bol',
     plan: s.plan,
     duration: s.duration,
     end_date: s.end_date,
@@ -556,12 +543,10 @@ app.delete('/api/admin/bols/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// Kreye plizyè boul alafwa (plage '01-15' oswa lis '01,05,12,33')
 app.post('/api/admin/bols/bulk', requireAdmin, (req, res) => {
   const { lottery_id, numbers, category, price } = req.body || {};
   const cleanId = lottery_id || 'ny';
 
-  // Parse 'numbers': ka yon etabli, yon chèn '01-15', oswa yon chèn '01,05,12'
   let nums = [];
   if (Array.isArray(numbers)) {
     nums = numbers.map((n) => String(n).trim());
@@ -571,7 +556,6 @@ app.post('/api/admin/bols/bulk', requireAdmin, (req, res) => {
     nums = raw.split(',').map((s) => s.trim()).filter(Boolean);
   }
 
-  // Expand plage yo (egzanp '01-15' -> 01..15)
   const expanded = [];
   const rangeRe = /^(\d{1,2})-(\d{1,2})$/;
   for (const n of nums) {
@@ -587,7 +571,6 @@ app.post('/api/admin/bols/bulk', requireAdmin, (req, res) => {
     }
   }
 
-  // Valide chak nimewo (2 chif 00-99)
   const cleanNums = [];
   for (const n of expanded) {
     const c = String(n).replace(/\D/g, '');
@@ -612,16 +595,16 @@ app.post('/api/admin/bols/bulk', requireAdmin, (req, res) => {
 });
 
 // ===== Loto 3 chif (000-999) =====
-function serializeChif3(b) {
+function serializeChif3(c) {
   return {
-    id: String(b.id),
-    lottery_id: b.lottery_id,
-    number: b.number,
-    category: b.category,
-    price: b.price,
-    status: b.status,
-    buyer_phone: b.buyer_phone || null,
-    created_at: b.created_at,
+    id: String(c.id),
+    lottery_id: c.lottery_id,
+    number: c.number,
+    category: c.category,
+    price: c.price,
+    status: c.status,
+    buyer_phone: c.buyer_phone || null,
+    created_at: c.created_at,
   };
 }
 
@@ -632,9 +615,10 @@ app.get('/api/chif3', (req, res) => {
 });
 
 app.get('/api/chif3/mine', requireAuth, (req, res) => {
-  const subs = db.getActiveSubsForUser(req.user.id);
+  const subs = db.getActiveSubsForUser(req.user.id).filter((s) => (s.product || 'bol') === 'chif3');
   const subsOut = subs.map((s) => ({
     lottery_id: s.lottery_id,
+    product: s.product || 'bol',
     plan: s.plan,
     duration: s.duration,
     end_date: s.end_date,
@@ -675,7 +659,6 @@ app.delete('/api/admin/chif3/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// Kreye plizyè nimewo 3 chif alafwa (plage '000-015' oswa lis '000,015,123')
 app.post('/api/admin/chif3/bulk', requireAdmin, (req, res) => {
   const { lottery_id, numbers, category, price } = req.body || {};
   const cleanId = lottery_id || 'ny';
@@ -740,6 +723,18 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+// --- APK otomatik update ---
+const LATEST_APK_VERSION = process.env.LATEST_APK_VERSION || '3.7.0';
+const LATEST_APK_URL = process.env.LATEST_APK_URL || '';
+app.get('/api/version', (req, res) => {
+  res.json({
+    version: LATEST_APK_VERSION,
+    version_code: Number(process.env.LATEST_APK_CODE || '7'),
+    download_url: LATEST_APK_URL,
+    force: (process.env.FORCE_UPDATE || 'false') === 'true',
+  });
+});
+
 async function syncResults() {
   try {
     const ny = await fetchNyResults();
@@ -756,6 +751,14 @@ async function syncResults() {
     console.error('[sync] FL echwe:', e.message);
   }
 }
+// Sinkwonize rezilta apre chak tiraj (lè ET) + chak 30 minit kòm backup.
+// FL: midday 1:30pm ET -> 1:45pm; evening 9:45pm ET -> 10:00pm ET
+// NY: midday 2:30pm ET -> 2:45pm; evening 10:30pm ET -> 10:45pm ET
+const ET = 'America/New_York';
+cron.schedule('45 13 * * *', syncResults, { timezone: ET });
+cron.schedule('45 10 * * *', syncResults, { timezone: ET });
+cron.schedule('45 14 * * *', syncResults, { timezone: ET });
+cron.schedule('45 22 * * *', syncResults, { timezone: ET });
 cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
