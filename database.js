@@ -91,7 +91,7 @@ function nextTicketNumber() {
   return 'SHP-' + year + '-' + num;
 }
 
-function createSubscription(userId, lotteryId, plan, duration, price, endDate, ticketNumber) {
+function createSubscription(userId, lotteryId, plan, duration, price, endDate, ticketNumber, product) {
   const id = ++state.counters.sub;
   const sub = {
     id,
@@ -100,6 +100,7 @@ function createSubscription(userId, lotteryId, plan, duration, price, endDate, t
     plan,
     duration,
     price,
+    product: product || 'bol',
     start_date: nowIso(),
     end_date: endDate,
     status: 'active',
@@ -119,6 +120,7 @@ function createPayment(data) {
     name: data.name || '',
     lottery_id: data.lotteryId || '',
     plan: data.plan || '',
+    product: data.product || 'bol',
     duration: data.duration || '',
     price: data.price || 0,
     screenshot_path: data.screenshotPath || '',
