@@ -761,5 +761,5 @@ cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
 app.listen(PORT, () => {
-  console.log(`Shop loto backend ap  koute sou pò ${PORT}`);
+  console.log(`Shop loto backend app,�isten oute sou pò ${PORT}`);
 });
