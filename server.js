@@ -374,7 +374,7 @@ function handleKobaraWebhookEvent(rawStr, res) {
     return res.json({ received: true });
   }
 
-  if (eventType === 'payment.succeeded' || data.status === 'succeded' || data.status === 'approved' || data.status === 'paid') {
+  if (eventType === 'payment.succeeded' || data.status === 'succeeded') {
     if (p.status !== 'approved') {
       db.updatePaymentStatus(p.id, 'approved');
       activatePaymentSubscription(p);
@@ -414,7 +414,7 @@ app.post('/api/payments/moncash/webhook', (req, res) => {
   const rawStr = rawBody ? rawBody.toString('utf8') : '';
   const signature = req.headers['kobara-signature'] || req.headers['x-mcc-signature'] || '';
 
-  const ok = verifyKobaraWebhookSignature(rawStr, crypto, signature);
+  const ok = verifyKobaraWebhookSignature(rawStr, signature);
   if (!ok) {
     console.error('[kobara] webhook (ansyen wout) siyati pa valab');
     return res.status(401).json({ error: 'Siyati pa valab' });
