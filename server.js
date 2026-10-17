@@ -75,13 +75,13 @@ app.post('/api/admin/verify-pin', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'Aksè refize' });
   }
   const pin = (req.body && req.body.pin ? String(req.body.pin).trim() : '');
-  if (!ADMIN_PIN ) {
-    return res.status(500).json({ error: 'ADMIN_PIN pa konfigi sou sèvè a' });
+  if (!ADMIN_PIN) {
+    return res.status(500).json({ error: 'ADMIN_PIN pa konfigir sou sèvè a' });
   }
   if (pin === ADMIN_PIN) {
     return res.json({ ok: true });
   }
-  return res.status(401).json({ error: 'PIN pa kòrúk' });
+  return res.status(401).json({ error: 'PIN pa kòrèk' });
 });
 
 function serializeUser(user) {
@@ -177,7 +177,7 @@ function toDrawResults(cachedRows) {
     numbers: String(r.numbers).split(''),
     sum: r.sum,
     boost: r.boost,
-  });
+  }));
 }
 
 const uploadDir = path.join(__dirname, 'uploads');
@@ -186,7 +186,7 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 function saveScreenshot(base64) {
   if (!base64) return '';
   try {
-    const clean = base64.replace(/^data:image\/\w;base64,/, '');
+    const clean = base64.replace(/^data:image\/\w+;base64,/, '');
     const buf = Buffer.from(clean, 'base64');
     const name = 'shot_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex') + '.png';
     fs.writeFileSync(path.join(uploadDir, name), buf);
@@ -215,7 +215,7 @@ app.post('/api/payments/submit', (req, res) => {
   res.json({ ok: true, id });
 });
 
-// ===== Kobara peman (MonCash + NatCash atravè yon sèl I@I) =====
+// ===== Kobara peman (MonCash + NatCash atravè yon sèl API) =====
 function kobaraHeaders() {
   return {
     'Authorization': 'Bearer ' + KOBARA_SECRET_KEY,
@@ -243,7 +243,7 @@ function verifyKobaraWebhookSignature(rawBody, signatureHeader, envHeader) {
 }
 
 function activatePaymentSubscription(p) {
-  // Men lojik ak /api/admin/payments/:id/approve
+  // Menm lojik ak /api/admin/payments/:id/approve
   const user = db.findUserByPhone(p.phone);
   if (user) {
     const days = p.duration === 'week' ? 7 : p.duration === 'year' ? 365 : 30;
@@ -301,13 +301,12 @@ app.post('/api/payments/moncash/create', requireAuth, async (req, res) => {
       const err = (kbData.error && kbData.error.message) ? kbData.error.message : (kbData.error || 'Kobara pay-create echwe');
       console.error('[kobara] pay-create echwe:', kbRes.status, JSON.stringify(kbData));
       return res.status(502).json({ error: err });
-
     }
 
     const reference = kbData.data.reference || kbData.data.id;
     const checkoutUrl = kbData.data.checkout_url || kbData.data.paymentUrl || kbData.data.url || kbData.data.payment_url || '';
 
-    // Enregistre peman nan db nou pou suiv li (estati = pending)
+    // Enrejistre peman nan db nou pou suiv li (estati = pending)
     const paymentId = db.createPayment({
       userId: user.id,
       phone: user.phone,
@@ -339,7 +338,7 @@ app.get('/api/payments/moncash/status', requireAuth, (req, res) => {
   if (!ref) return res.status(400).json({ error: 'referenceId obligatwa' });
   const p = db.getPaymentByMoncashReference(ref);
   if (!p) return res.json({ status: 'unknown' });
-  // Map estati entènn nou an -> sa app la atann
+  // Map estati entèn nou an -> sa app la atann
   let status = 'pending';
   if (p.status === 'approved') status = 'completed';
   else if (p.status === 'rejected' || p.status === 'failed') status = 'failed';
@@ -365,7 +364,7 @@ function handleKobaraWebhookEvent(rawStr, res) {
 
   const p = reference ? db.getPaymentByMoncashReference(reference) : null;
   if (!p) {
-    // Pa konnen peman sa a men aksépte (pou evite retries infinies) si evènman pa kritik
+    // Pa konnen peman sa a men aksèpte (pou evite retries infinies) si evènman pa kritik
     return res.json({ received: true });
   }
 
@@ -449,13 +448,13 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 app.get('/api/admin/payments', requireAdmin, (req, res) => {
   const rows = db.listPayments();
-  res.json(rows.map((r) => serializePayment(r))));
+  res.json(rows.map((r) => serializePayment(r)));
 });
 
 app.get('/api/admin/screenshot/:file', requireAdmin, (req, res) => {
   const file = path.join(uploadDir, path.basename(req.params.file));
   if (fs.existsSync(file)) return res.sendFile(file);
-  res.status(404).json({ error: 'Pa jwenn imag la' });
+  res.status(404).json({ error: 'Pa jwenn imaj la' });
 });
 
 app.post('/api/admin/payments/:id/approve', requireAdmin, (req, res) => {
@@ -562,7 +561,7 @@ app.post('/api/admin/bols/bulk', requireAdmin, (req, res) => {
   const { lottery_id, numbers, category, price } = req.body || {};
   const cleanId = lottery_id || 'ny';
 
-  // Parse 'numbers': ka yon etable, yon chèn '01-15', oswa yon chèn '01,05,12'
+  // Parse 'numbers': ka yon etabli, yon chèn '01-15', oswa yon chèn '01,05,12'
   let nums = [];
   if (Array.isArray(numbers)) {
     nums = numbers.map((n) => String(n).trim());
@@ -761,5 +760,5 @@ cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
 app.listen(PORT, () => {
-  console.log(`Shop loto backend app,�isten oute sou pò ${PORT}`);
+  console.log(`Shop loto backend ap koute sou pò ${PORT}`);
 });
