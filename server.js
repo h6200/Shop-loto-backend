@@ -192,10 +192,11 @@ function toDrawResults(cachedRows) {
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-function saveScreenshot(screenshot_base64) {
-  if (!screenshot_base64) return '';
+function saveScreenshot(base64) {
+  if (!base64) return '';
   try {
-    const buf = Buffer.from(screenshot_base64, 'base64');
+    const clean = base64.replace(/^data:image\/\w+;base64,/, '');
+    const buf = Buffer.from(clean, 'base64');
     const name = 'shot_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex') + '.png';
     fs.writeFileSync(path.join(uploadDir, name), buf);
     return name;
@@ -420,10 +421,10 @@ app.post('/api/payments/moncash/webhook', (req, res) => {
   const rawBody = req.body;
   const rawStr = rawBody ? rawBody.toString('utf8') : '';
   const signature = req.headers['kobara-signature'] || req.headers['x-mcc-signature'] || '';
-  const envHeader = req.headers['kobara-environment'] || '';
 
-  const ok = verifyKobaraWebhookSignature(rawStr, signature, envHeader);
+  const ok = verifyKobaraWebhookSignature(rawStr, signature);
   if (!ok) {
+    console.error('[kobara] webhook (ansyen wout) siyati pa valab');
     return res.status(401).json({ error: 'Siyati pa valab' });
   }
 
@@ -434,10 +435,15 @@ app.post('/api/payments/moncash/webhook', (req, res) => {
   }
 });
 
+app.get('/api/payments/mine', requireAuth, (req, res) => {
+  const rows = db.listPaymentsByPhone(req.user.phone);
+  res.json(rows.map((r) => serializePayment(r)));
+});
+
 function serializePayment(r) {
   return {
     id: String(r.id),
-    user_id: r.user_id || null,
+    user_id: String(r.user_id || ''),
     phone: r.phone,
     name: r.name,
     lottery_id: r.lottery_id,
@@ -451,6 +457,23 @@ function serializePayment(r) {
   };
 }
 
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ user: serializeUser(req.user) });
+});
+
+// Anile / kanpe yon plan VIP (itilizatè sèlman ka anile pwòp abònman li).
+app.post('/api/subscriptions/:id/cancel', requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: 'Id abònman pa valab' });
+  }
+  const sub = db.cancelSubscription(id, req.user.id);
+  if (!sub) {
+    return res.status(404).json({ error: 'Abònman pa egziste' });
+  }
+  res.json({ ok: true, user: serializeUser(req.user) });
+});
+
 app.get('/api/admin/dashboard', requireAdmin, (req, res) => {
   res.json(db.getDashboardStats());
 });
@@ -460,11 +483,8 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
 });
 
 app.get('/api/admin/payments', requireAdmin, (req, res) => {
-  res.json(db.listPayments().map(serializePayment));
-});
-
-app.get('/api/payments/mine', requireAuth, (req, res) => {
-  res.json(db.listPaymentsByPhone(req.user.phone).map(serializePayment));
+  const rows = db.listPayments();
+  res.json(rows.map((r) => serializePayment(r)));
 });
 
 app.get('/api/admin/screenshot/:file', requireAdmin, (req, res) => {
@@ -781,5 +801,5 @@ cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
 app.listen(PORT, () => {
-  console.log('Shop-loto backend kouri sou pò ' + PORT);
+  console.log(`Shop loto backend ap koute sou pò ${PORT}`);
 });
