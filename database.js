@@ -82,6 +82,18 @@ function getSubsForUser(userId) {
     .filter((s) => s.user_id === userId)
     .sort((a, b) => new Date(b.end_date) - new Date(a.end_date));
 }
+function getSubscriptionById(id) {
+  return state.subscriptions.find((s) => s.id === id) || null;
+}
+function cancelSubscription(id, userId) {
+  const sub = state.subscriptions.find((s) => s.id === id && s.user_id === userId);
+  if (!sub) return null;
+  sub.status = 'cancelled';
+  // Kanpe aksè imedyatman lè w mete end_date nan moman an
+  sub.end_date = nowIso();
+  save();
+  return sub;
+}
 
 function nextTicketNumber() {
   if (!state.counters.ticket) state.counters.ticket = 0;
@@ -317,6 +329,8 @@ module.exports = {
   createUser,
   getActiveSubsForUser,
   getSubsForUser,
+  getSubscriptionById,
+  cancelSubscription,
   createSubscription,
   nextTicketNumber,
   createPayment,
