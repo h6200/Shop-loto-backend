@@ -90,7 +90,13 @@ function serializeUser(user) {
   for (const s of subs) {
     const product = s.product || 'bol';
     const key = s.lottery_id + ':' + product;
+    const status = (s.status === 'cancelled')
+      ? 'cancelled'
+      : ((new Date(s.end_date).getTime() > Date.now()) ? 'active' : 'expired');
+    // Kenbe dènye abònman aktif pou chak kategori (youn nan kategori)
+    if (vipSubs[key] && status !== 'active') continue;
     vipSubs[key] = {
+      id: s.id,
       lottery_id: s.lottery_id,
       product: product,
       plan: s.plan,
@@ -98,7 +104,7 @@ function serializeUser(user) {
       price: s.price,
       start_date: s.start_date,
       end_date: s.end_date,
-      status: (new Date(s.end_date).getTime() > Date.now()) ? 'active' : 'expired',
+      status: status,
       ticket_number: s.ticket_number || null,
     };
   }
@@ -186,11 +192,10 @@ function toDrawResults(cachedRows) {
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-function saveScreenshot(base64) {
-  if (!base64) return '';
+function saveScreenshot(screenshot_base64) {
+  if (!screenshot_base64) return '';
   try {
-    const clean = base64.replace(/^data:image\/\w+;base64,/, '');
-    const buf = Buffer.from(clean, 'base64');
+    const buf = Buffer.from(screenshot_base64, 'base64');
     const name = 'shot_' + Date.now() + '_' + crypto.randomBytes(4).toString('hex') + '.png';
     fs.writeFileSync(path.join(uploadDir, name), buf);
     return name;
@@ -200,9 +205,10 @@ function saveScreenshot(base64) {
 }
 
 app.post('/api/payments/submit', (req, res) => {
-  const { phone, name, lottery_id, plan, duration, price, screenshot_base64 } =
+  const { phone, name, lottery_id, plan, duration, price, screenshot_base64, product } =
     req.body || {};
   const cleanPhone = String(phone || '').replace(/\D/g, '');
+  const cleanProduct = product === 'chif3' ? 'chif3' : 'bol';
   const user = db.findUserByPhone(cleanPhone);
   const filename = saveScreenshot(screenshot_base64);
   const id = db.createPayment({
@@ -213,6 +219,7 @@ app.post('/api/payments/submit', (req, res) => {
     plan: plan,
     duration: duration,
     price: price,
+    product: cleanProduct,
     screenshotPath: filename,
   });
   res.json({ ok: true, id });
@@ -413,10 +420,10 @@ app.post('/api/payments/moncash/webhook', (req, res) => {
   const rawBody = req.body;
   const rawStr = rawBody ? rawBody.toString('utf8') : '';
   const signature = req.headers['kobara-signature'] || req.headers['x-mcc-signature'] || '';
+  const envHeader = req.headers['kobara-environment'] || '';
 
-  const ok = verifyKobaraWebhookSignature(rawStr, signature);
+  const ok = verifyKobaraWebhookSignature(rawStr, signature, envHeader);
   if (!ok) {
-    console.error('[kobara] webhook (ansyen wout) siyati pa valab');
     return res.status(401).json({ error: 'Siyati pa valab' });
   }
 
@@ -427,15 +434,10 @@ app.post('/api/payments/moncash/webhook', (req, res) => {
   }
 });
 
-app.get('/api/payments/mine', requireAuth, (req, res) => {
-  const rows = db.listPaymentsByPhone(req.user.phone);
-  res.json(rows.map((r) => serializePayment(r)));
-});
-
 function serializePayment(r) {
   return {
     id: String(r.id),
-    user_id: String(r.user_id || ''),
+    user_id: r.user_id || null,
     phone: r.phone,
     name: r.name,
     lottery_id: r.lottery_id,
@@ -449,13 +451,20 @@ function serializePayment(r) {
   };
 }
 
-app.get('/api/me', requireAuth, (req, res) => {
-  res.json({ user: serializeUser(req.user) });
+app.get('/api/admin/dashboard', requireAdmin, (req, res) => {
+  res.json(db.getDashboardStats());
+});
+
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  res.json(db.listUsers().map((u) => serializeUser(u)));
 });
 
 app.get('/api/admin/payments', requireAdmin, (req, res) => {
-  const rows = db.listPayments();
-  res.json(rows.map((r) => serializePayment(r)));
+  res.json(db.listPayments().map(serializePayment));
+});
+
+app.get('/api/payments/mine', requireAuth, (req, res) => {
+  res.json(db.listPaymentsByPhone(req.user.phone).map(serializePayment));
 });
 
 app.get('/api/admin/screenshot/:file', requireAdmin, (req, res) => {
@@ -729,23 +738,15 @@ app.post('/api/admin/chif3/bulk', requireAdmin, (req, res) => {
   res.json({ ok: true, ids: created, count: created.length });
 });
 
-app.get('/api/admin/dashboard', requireAdmin, (req, res) => {
-  res.json(db.getDashboardStats());
-});
-
-app.get('/api/admin/users', requireAdmin, (req, res) => {
-  res.json(db.listUsers().map((u) => serializeUser(u)));
-});
-
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 // --- APK otomatik update ---
-const LATEST_APK_VERSION = process.env.LATEST_APK_VERSION || '3.7.0';
+const LATEST_APK_VERSION = process.env.LATEST_APK_VERSION || '3.8.0';
 const LATEST_APK_URL = process.env.LATEST_APK_URL || '';
 app.get('/api/version', (req, res) => {
   res.json({
     version: LATEST_APK_VERSION,
-    version_code: Number(process.env.LATEST_APK_CODE || '7'),
+    version_code: Number(process.env.LATEST_APK_CODE || '8'),
     download_url: LATEST_APK_URL,
     force: (process.env.FORCE_UPDATE || 'false') === 'true',
   });
@@ -780,5 +781,5 @@ cron.schedule('*/30 * * * *', syncResults);
 syncResults();
 
 app.listen(PORT, () => {
-  console.log(`Shop loto backend ap koute sou pò ${PORT}`);
+  console.log('Shop-loto backend kouri sou pò ' + PORT);
 });
