@@ -773,6 +773,188 @@ app.post('/api/admin/chif3/bulk', requireAdmin, (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+// ===== Notifikasyon (admin -> itilizatè) =====
+// FCM — sipòte de mòd:
+//   1) FCM_SERVICE_ACCOUNT (JSON string) -> HTTP v1 OAuth2 (rekòmande, modèn)
+//   2) FCM_SERVER_KEY (legacy) -> fallback
+const FCM_SERVICE_ACCOUNT = process.env.FCM_SERVICE_ACCOUNT || '';
+const FCM_V1_PROJECT_ID = process.env.FCM_V1_PROJECT_ID || '';
+const FCM_SERVER_KEY = process.env.FCM_SERVER_KEY || '';
+
+// Rejistre token FCM itilizatè a (pou push reyèl).
+app.post('/api/notifications/register-token', requireAuth, (req, res) => {
+  const token = (req.body && req.body.token ? String(req.body.token).trim() : '');
+  if (!token) return res.status(400).json({ error: 'Token obligatwa' });
+  db.saveFcmToken(req.user.id, token);
+  res.json({ ok: true });
+});
+
+// Lis notifikasyon pou itilizatè konekte (sèlman sa ki adrese l').
+app.get('/api/notifications', requireAuth, (req, res) => {
+  const user = req.user;
+  const subs = db.getActiveSubsForUser(user.id);
+  const lotteryIds = new Set(subs.map((s) => s.lottery_id));
+  const categories = new Set(subs.map((s) => s.plan));
+  const isVip = subs.length > 0;
+
+  const rows = db.listNotifications().filter((n) => {
+    const a = n.audience;
+    if (!a || a === 'all') return true;
+    if (a === 'vip') return isVip;
+    if (a === 'ny' || a === 'fl') return lotteryIds.has(a);
+    if (a === 'basic' || a === 'silver' || a === 'gold') return categories.has(a);
+    return true;
+  });
+  res.json(rows.map(serializeNotification));
+});
+
+function serializeNotification(n) {
+  return {
+    id: String(n.id),
+    title: n.title,
+    body: n.body,
+    audience: n.audience || 'all',
+    created_at: n.created_at,
+  };
+}
+
+// Admin voye yon notifikasyon. audience: all | vip | ny | fl | basic | silver | gold
+app.post('/api/admin/notifications/send', requireAdmin, async (req, res) => {
+  const { title, body, audience } = req.body || {};
+  const cleanTitle = String(title || '').trim();
+  const cleanBody = String(body || '').trim();
+  if (!cleanTitle || !cleanBody) {
+    return res.status(400).json({ error: 'Tit ak mesaj obligatwa' });
+  }
+  const cleanAudience = ['all', 'vip', 'ny', 'fl', 'basic', 'silver', 'gold'].includes(audience)
+    ? audience
+    : 'all';
+
+  const n = db.createNotification({ title: cleanTitle, body: cleanBody, audience: cleanAudience });
+
+  // Push reyèl FCM (si kle prezan) — voye a moun ki nan odyans lan.
+  let pushed = 0;
+  try {
+    const tokens = collectAudienceTokens(cleanAudience);
+    for (const tk of tokens) {
+      const ok = await sendFcm(tk, cleanTitle, cleanBody);
+      if (ok) pushed++;
+    }
+  } catch (e) {
+    console.error('[fcm] voye echwe:', e.message);
+  }
+
+  res.json({ ok: true, id: String(n.id), pushed: pushed, audience: cleanAudience });
+});
+
+function collectAudienceTokens(audience) {
+  const tokens = [];
+  for (const u of db.listUsers()) {
+    if (!Array.isArray(u.fcm_tokens) || !u.fcm_tokens.length) continue;
+    const subs = db.getActiveSubsForUser(u.id);
+    let include = audience === 'all';
+    if (audience === 'vip') {
+      include = subs.length > 0;
+    } else if (audience === 'ny' || audience === 'fl') {
+      include = subs.some((s) => s.lottery_id === audience);
+    } else if (audience === 'basic' || audience === 'silver' || audience === 'gold') {
+      include = subs.some((s) => s.plan === audience);
+    }
+    if (include) tokens.push(...u.fcm_tokens);
+  }
+  return tokens;
+}
+
+// FCM (sipòte HTTP v1 OAuth2 ak legacy). Si pa konfig, skip silansyeman.
+async function sendFcm(token, title, body) {
+  try {
+    if (FCM_SERVICE_ACCOUNT && FCM_V1_PROJECT_ID) {
+      return await sendFcmV1(token, title, body);
+    }
+    if (FCM_SERVER_KEY) {
+      return await sendFcmLegacy(token, title, body);
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function sendFcmLegacy(token, title, body) {
+  const res = await fetch('https://fcm.googleapis.com/fcm/send', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'key=' + FCM_SERVER_KEY,
+    },
+    body: JSON.stringify({
+      to: token,
+      notification: { title: title, body: body, sound: 'default' },
+      data: { title: title, body: body },
+    }),
+  });
+  const j = await res.json().catch(() => ({}));
+  return res.ok && (j.success === 1 || j.success === true);
+}
+
+// HTTP v1 + OAuth2 (sèvis kont). Signature JWT gen n mwaye kourte (1 èdtan).
+async function sendFcmV1(token, title, body) {
+  let sa;
+  try {
+    sa = JSON.parse(FCM_SERVICE_ACCOUNT);
+  } catch (e) {
+    return false;
+  }
+  const accessToken = await getGoogleAccessToken(sa, 'https://www.googleapis.com/auth/firebase.messaging');
+  if (!accessToken) return false;
+  const url = `https://fcm.googleapis.com/v1/projects/${FCM_V1_PROJECT_ID}/messages:send`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + accessToken,
+    },
+    body: JSON.stringify({
+      message: {
+        token: token,
+        notification: { title: title, body: body },
+        data: { title: title, body: body },
+        android: { priority: 'HIGH' },
+      },
+    }),
+  });
+  const j = await res.json().catch(() => ({}));
+  return res.ok && !j.error;
+}
+
+function getGoogleAccessToken(sa, scope) {
+  const crypto = require('crypto');
+  const email = sa.client_email;
+  const key = sa.private_key;
+  if (!email || !key) return Promise.resolve(null);
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const claims = {
+    iss: email,
+    scope: scope,
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600,
+  };
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const input = b64(header) + '.' + b64(claims);
+  const sig = crypto.createSign('RSA-SHA256').update(input).sign(key, 'base64url');
+  const jwt = input + '.' + sig;
+  return fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=' + encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer') + '&assertion=' + encodeURIComponent(jwt),
+  })
+    .then((r) => r.json())
+    .then((j) => (j && j.access_token) || null)
+    .catch(() => null);
+}
+
 // --- APK otomatik update ---
 const LATEST_APK_VERSION = process.env.LATEST_APK_VERSION || '3.8.0';
 const LATEST_APK_URL = process.env.LATEST_APK_URL || '';
