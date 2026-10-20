@@ -11,7 +11,8 @@ const state = {
   results: [],
   bols: [],
   chif3: [],
-  counters: { user: 0, sub: 0, payment: 0, bol: 0, chif3: 0, ticket: 0 },
+  notifications: [],
+  counters: { user: 0, sub: 0, payment: 0, bol: 0, chif3: 0, ticket: 0, notif: 0 },
 };
 
 function load() {
@@ -26,7 +27,8 @@ function load() {
       state.results = raw.results || [];
       state.bols = raw.bols || [];
       state.chif3 = raw.chif3 || [];
-      state.counters = raw.counters || { user: 0, sub: 0, payment: 0, bol: 0, chif3: 0, ticket: 0 };
+      state.notifications = raw.notifications || [];
+      state.counters = raw.counters || { user: 0, sub: 0, payment: 0, bol: 0, chif3: 0, ticket: 0, notif: 0 };
     }
   } catch (e) {
     console.error('[db] chaj echwe:', e.message);
@@ -309,6 +311,47 @@ function getCachedResults(lotteryId, limit) {
     .slice(0, limit || 60);
 }
 
+// --- Notifikasyon (admin -> itilizatè) ---
+// audience: 'all' | 'vip' | 'ny' | 'fl' | 'basic' | 'silver' | 'gold'
+function createNotification({ title, body, audience }) {
+  const id = ++state.counters.notif;
+  const n = {
+    id,
+    title: title || '',
+    body: body || '',
+    audience: audience || 'all',
+    created_at: nowIso(),
+  };
+  state.notifications.push(n);
+  save();
+  return n;
+}
+
+function listNotifications() {
+  return [...state.notifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+}
+
+function getActiveSubsAll() {
+  const now = Date.now();
+  return state.subscriptions.filter((s) => new Date(s.end_date).getTime() > now && s.status !== 'cancelled');
+}
+
+// Token FCM pou chak itilizatè (pou push reyèl)
+function saveFcmToken(userId, token) {
+  const user = findUserById(userId);
+  if (!user) return false;
+  const clean = String(token || '').trim();
+  if (!clean) return false;
+  // Kenbe yon lis (capped) pou zouti miltip
+  if (!Array.isArray(user.fcm_tokens)) user.fcm_tokens = [];
+  if (!user.fcm_tokens.includes(clean)) {
+    user.fcm_tokens.push(clean);
+    if (user.fcm_tokens.length > 8) user.fcm_tokens = user.fcm_tokens.slice(-8);
+  }
+  save();
+  return true;
+}
+
 function getDashboardStats() {
   const now = Date.now();
   const totalUsers = state.users.length;
@@ -366,4 +409,8 @@ module.exports = {
   upsertResults,
   getCachedResults,
   getDashboardStats,
+  createNotification,
+  listNotifications,
+  getActiveSubsAll,
+  saveFcmToken,
 };
